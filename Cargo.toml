@@ -1,0 +1,35 @@
+[package]
+name = "maki-player"
+version = "0.1.0"
+edition = "2024"
+description = "A small native music player"
+license = "MIT"
+build = "build.rs"
+
+[dependencies]
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2", "unstable-winit-030", "accessibility"] }
+symphonia = { version = "0.5.5", default-features = false, features = ["mp3", "flac", "wav", "pcm", "ogg", "vorbis", "aac", "alac", "isomp4"] }
+rubato = { version = "0.16.2", default-features = false }
+cpal = "0.16"
+rtrb = "0.3"
+lofty = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+souvlaki = { version = "0.8", default-features = false }
+walkdir = "2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+directories = "6"
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+raw-window-handle = "0.6"
+url = "2"
+
+[build-dependencies]
+slint-build = "=1.18.1"
+winresource = "0.1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
