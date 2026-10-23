@@ -252,7 +252,7 @@ pub fn spawn(
             let mut last_publish = Instant::now();
             let mut last_save = Instant::now();
             let mut last_device_check = Instant::now();
-            loop {
+            'run: loop {
                 let timeout = if engine.playing || engine.recovery {
                     Duration::from_millis(20)
                 } else {
@@ -265,8 +265,7 @@ pub fn spawn(
                 }
                 for command in rx.try_iter().take(64) {
                     if matches!(command, Command::Shutdown) {
-                        engine.save();
-                        return;
+                        break 'run;
                     }
                     engine.command(command);
                 }
@@ -888,9 +887,7 @@ impl Engine {
             Command::Notice(message) => self.notice(message),
             Command::Cover(id, art) => {
                 if self.current == Some(id) {
-                    self.cover_url = art
-                        .as_ref()
-                        .and_then(|pixels| platform::cache_cover(&self.session_path, pixels));
+                    self.cover_url = platform::cache_cover(&self.session_path, art.as_ref());
                     self.cover = Some(art);
                 }
             }
@@ -936,7 +933,8 @@ impl Engine {
                 .chain(self.lost.iter().cloned())
                 .collect(),
             current: self.current_index(),
-            position: self.position,
+            // A finished queue keeps its end position on screen, but restoring it there makes Play a no-op.
+            position: if self.stopped { 0.0 } else { self.position },
             volume: self.volume,
             muted: self.muted,
             shuffle: self.shuffle,
@@ -1039,6 +1037,22 @@ mod tests {
         let saved = platform::load(&dir.join("session.toml")).unwrap();
         assert_eq!(saved.queue, vec![here, gone]);
         assert_eq!(saved.current, Some(0));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn corrupt_session_is_kept_and_cover_url_is_a_plain_windows_path() {
+        let dir = std::env::temp_dir().join(format!("maki-platform-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.toml");
+        std::fs::write(&path, "queue = [").unwrap();
+        assert!(platform::load(&path).is_err());
+        assert!(dir.join("session.toml.bad").exists());
+        let url = platform::cache_cover(&path, None).unwrap();
+        assert!(dir.join("now-playing.png").exists());
+        if cfg!(target_os = "windows") {
+            let plain = url.strip_prefix("file://").unwrap();
+            assert!(std::path::Path::new(plain).is_absolute(), "{url}");
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]

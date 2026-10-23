@@ -76,7 +76,18 @@ component Seek inherits TouchArea {
     }
     // No thumb while nothing is loaded: a lit handle on a dead bar reads as interactive.
     if root.enabled: Rectangle { x: (parent.width - root.thumb) * root.shown; y: (parent.height - root.thumb) / 2; width: root.thumb; height: root.thumb; border-radius: root.thumb / 2; background: Skin.accent; }
-    clicked => { root.seek(max(0, min(1, self.mouse-x / self.width))); }
+    // Seek on release, not `clicked`: a drag that ends past either end of the bar must still seek.
+    property <bool> dragging;
+    pointer-event(event) => {
+        if event.kind == PointerEventKind.down {
+            self.dragging = event.button == PointerEventButton.left;
+        } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.left && self.dragging {
+            self.dragging = false;
+            root.seek(max(0, min(1, self.mouse-x / self.width)));
+        } else if event.kind == PointerEventKind.cancel {
+            self.dragging = false;
+        }
+    }
 }
 
 component Switch inherits Rectangle {
@@ -269,6 +280,8 @@ export component PlayerWindow inherits Window {
                 if root.pinned && event.kind == PointerEventKind.down && event.button == PointerEventButton.left { root.drag-window(); }
             }
             scroll-event(event) => {
+                // Horizontal-only scrolls (tilt wheel, touchpad) have delta-y 0 and must not lower the volume.
+                if event.delta-y == 0 { return reject; }
                 root.change-volume(max(0, min(1, root.volume + (event.delta-y > 0 ? 0.05 : -0.05))));
                 accept
             }

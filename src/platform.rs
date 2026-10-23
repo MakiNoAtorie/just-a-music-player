@@ -67,8 +67,16 @@ pub fn session_path(override_dir: Option<PathBuf>) -> Result<PathBuf, String> {
 pub fn load(path: &Path) -> Result<Session, String> {
     match fs::read_to_string(path) {
         Ok(contents) => {
-            let mut session: Session =
-                toml::from_str(&contents).map_err(|e| format!("Could not restore session: {e}"))?;
+            let mut session: Session = toml::from_str(&contents).map_err(|e| {
+                // Keep the unreadable file: the next save would otherwise replace the user's queue.
+                let kept = fs::rename(path, path.with_extension("toml.bad")).is_ok();
+                let kept = if kept {
+                    " (old file kept as session.toml.bad)"
+                } else {
+                    ""
+                };
+                format!("Could not restore session{kept}: {e}")
+            })?;
             if !session.position.is_finite() {
                 session.position = 0.0;
             }
@@ -233,14 +241,21 @@ pub fn read_cover(path: &Path) -> Option<image::RgbaImage> {
     Some(reader.decode().ok()?.thumbnail(256, 256).into_rgba8())
 }
 
-pub fn cache_cover(session: &Path, pixels: &image::RgbaImage) -> Option<String> {
+/// Without art, the app icon replaces the previous track's thumbnail in the OS overlay.
+pub fn cache_cover(session: &Path, pixels: Option<&image::RgbaImage>) -> Option<String> {
     let directory = session.parent()?;
     fs::create_dir_all(directory).ok()?;
-    let path = directory.join("now-playing.png");
-    pixels.save(&path).ok()?;
-    url::Url::from_file_path(fs::canonicalize(path).ok()?)
-        .ok()
-        .map(|url| url.to_string())
+    let path = std::path::absolute(directory.join("now-playing.png")).ok()?;
+    match pixels {
+        Some(pixels) => pixels.save(&path).ok()?,
+        None => fs::write(&path, include_bytes!("../assets/icon.png")).ok()?,
+    }
+    // souvlaki on Windows strips only "file://" and needs a plain path after it, not "/C:/...".
+    if cfg!(target_os = "windows") {
+        Some(format!("file://{}", path.display()))
+    } else {
+        url::Url::from_file_path(path).ok().map(String::from)
+    }
 }
 
 struct Media {
@@ -451,7 +466,8 @@ fn setup_window(
                         Some(Command::Clear)
                     }
                     K::Delete if selected >= 0 => {
-                        app.set_selected(-1);
+                        // Same as the row's remove button: the next row stays selected.
+                        app.set_selected(selected.min(count - 2));
                         Some(Command::Remove(selected as usize))
                     }
                     K::ArrowUp | K::ArrowDown if modifiers.alt_key() && selected >= 0 => {

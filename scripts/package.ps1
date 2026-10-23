@@ -6,6 +6,8 @@ try {
     & "$PSScriptRoot\cargo.ps1" build --release --locked --offline
     if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
     $packageRoot = Join-Path $projectRoot "dist\$PackageName"
+    # Start clean so license files of removed dependency versions do not ship in the zip.
+    if (Test-Path -LiteralPath $packageRoot) { Remove-Item -LiteralPath $packageRoot -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $packageRoot, "$packageRoot\licenses" | Out-Null
     Copy-Item -LiteralPath 'target\release\maki-player.exe' -Destination $packageRoot
     foreach ($name in @('README.md', 'VALIDATION.md', 'BUILD_SPEC.md', 'LICENSE')) { Copy-Item -LiteralPath $name -Destination $packageRoot }
