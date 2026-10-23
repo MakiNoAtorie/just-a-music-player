@@ -1,7 +1,7 @@
 use crate::{
     audio::{Output, OutputBackend, Shared},
     decoder::Source,
-    platform,
+    platform, youtube,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -52,6 +52,8 @@ pub struct Session {
     pub pinned: bool,
     /// Float the mini player automatically when the user switches to another window.
     pub auto_float: bool,
+    /// Titles of queued YouTube links: they have no file to read tags from.
+    pub web: Vec<Track>,
 }
 
 /// Everything about how the window looks; the UI sends it whole on any change.
@@ -78,11 +80,13 @@ impl Default for Session {
             compact: false,
             pinned: false,
             auto_float: false,
+            web: Vec::new(),
         }
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Track {
+    #[serde(skip)]
     pub id: u64,
     pub path: PathBuf,
     pub title: String,
@@ -114,6 +118,8 @@ pub enum Command {
     Loading(bool),
     Notice(String),
     Cover(u64, Option<image::RgbaImage>),
+    /// A background YouTube lookup for this page finished.
+    Prepared(PathBuf, Result<(), String>),
     WindowSize(f32, f32),
     Look(Look),
     Shutdown,
@@ -142,6 +148,14 @@ pub struct State {
     /// Playback generation; tests use it to prove a command did not reopen the track.
     #[cfg_attr(not(test), allow(dead_code))]
     pub epoch: u64,
+}
+
+#[derive(PartialEq)]
+enum Opened {
+    Yes,
+    No,
+    /// A YouTube lookup runs in the background; `Command::Prepared` continues.
+    Later,
 }
 
 struct Segment {
@@ -221,9 +235,15 @@ pub fn spawn(
                 config_dirty: false,
                 recovery: false,
                 resume_after_recovery: false,
+                waiting: None,
+                stream_failures: 0,
             };
             for (original_index, path) in session.queue.into_iter().enumerate() {
-                match platform::read_track(path.clone()) {
+                let track = match session.web.iter().find(|t| t.path == path) {
+                    Some(track) => Ok(track.clone()),
+                    None => platform::read_track(path.clone()),
+                };
+                match track {
                     Ok(mut track) => {
                         engine.id += 1;
                         track.id = engine.id;
@@ -349,6 +369,10 @@ struct Engine {
     config_dirty: bool,
     recovery: bool,
     resume_after_recovery: bool,
+    /// Track and position to open when its YouTube lookup finishes.
+    waiting: Option<(u64, f64)>,
+    /// YouTube lookups that failed since a track last opened; offline, skipping on would try every video.
+    stream_failures: u32,
 }
 impl Engine {
     fn index(&self, id: u64) -> Option<usize> {
@@ -430,7 +454,14 @@ impl Engine {
                     self.bag.push(segment.id);
                 }
             }
+            if let Some((id, _)) = self.waiting
+                && Some(id) != self.current
+                && !self.bag.contains(&id)
+            {
+                self.bag.push(id);
+            }
         }
+        self.waiting = None;
         self.epoch += 1;
         self.shared.epoch.store(self.epoch, Ordering::Release);
         self.source = None;
@@ -457,12 +488,18 @@ impl Engine {
             }
         }
     }
-    fn open_source(&mut self, id: u64, position: f64) -> bool {
+    fn open_source(&mut self, id: u64, position: f64) -> Opened {
         let Some(index) = self.index(id) else {
-            return false;
+            return Opened::No;
         };
+        let path = &self.queue[index].path;
+        if youtube::is_stream(path) && !youtube::ready(path) {
+            youtube::prepare(path.clone(), self.tx.clone());
+            self.waiting = Some((id, position));
+            return Opened::Later;
+        }
         let rate = self.output.as_ref().unwrap().rate;
-        match Source::open(&self.queue[index].path, rate, position) {
+        match Source::open(path, rate, position) {
             Ok(source) => {
                 if source.duration > 0.0
                     && (source.duration - self.queue[index].duration).abs() > 0.001
@@ -479,13 +516,50 @@ impl Engine {
                     finished: false,
                 });
                 self.source = Some(source);
-                true
+                self.stream_failures = 0;
+                self.prefetch(id);
+                Opened::Yes
             }
             Err(error) => {
                 self.failed.insert(id);
                 self.notice(format!("Skipped {}: {error}", self.queue[index].title));
-                false
+                Opened::No
             }
+        }
+    }
+    /// Look up the likely next YouTube track while this one plays, so it starts without a gap.
+    fn prefetch(&self, id: u64) {
+        let next = if self.shuffle {
+            self.bag.last().copied()
+        } else {
+            self.index(id).and_then(|i| {
+                self.queue
+                    .get(i + 1)
+                    .or(self.queue.first().filter(|_| self.repeat == Repeat::All))
+                    .map(|t| t.id)
+            })
+        };
+        if let Some(track) = next.and_then(|id| self.index(id)).map(|i| &self.queue[i])
+            && youtube::is_stream(&track.path)
+            && !youtube::ready(&track.path)
+        {
+            youtube::prepare(track.path.clone(), self.tx.clone());
+        }
+    }
+    fn stream_failed(&mut self, id: u64, error: String) {
+        self.failed.insert(id);
+        self.stream_failures += 1;
+        if self.stream_failures >= 3 {
+            self.stream_failures = 0;
+            self.command(Command::Stop);
+            self.notice(format!("Stopped after 3 YouTube videos failed: {error}"));
+            return;
+        }
+        let title = self.index(id).map(|i| self.queue[i].title.clone());
+        self.notice(format!("Skipped {}: {error}", title.unwrap_or_default()));
+        match self.next_id(id, false) {
+            Some(next) => self.start(next, 0.0, self.playing),
+            None => self.command(Command::Stop),
         }
     }
     fn start(&mut self, id: u64, position: f64, playing: bool) {
@@ -520,14 +594,17 @@ impl Engine {
             let Some(next) = candidate else {
                 break;
             };
-            if self.open_source(next, if next == id { position } else { 0.0 }) {
+            let opened = self.open_source(next, if next == id { position } else { 0.0 });
+            if opened != Opened::No {
                 if next != id {
                     self.current = Some(next);
                     self.position = 0.0;
                     self.request_cover();
                 }
-                self.fill();
-                self.shared.paused.store(!self.playing, Ordering::Release);
+                if opened == Opened::Yes {
+                    self.fill();
+                    self.shared.paused.store(!self.playing, Ordering::Release);
+                }
                 return;
             }
             candidate = self.next_id(next, false);
@@ -566,7 +643,8 @@ impl Engine {
                     .front()
                     .is_some_and(|s| s.finished && frame >= s.written)
                 && self.source.is_none()
-                && self.pending.is_empty();
+                && self.pending.is_empty()
+                && self.waiting.is_none();
             if ended && self.playing {
                 self.playing = false;
                 self.stopped = true;
@@ -628,12 +706,15 @@ impl Engine {
                         let Some(id) = next else {
                             break;
                         };
-                        if self.open_source(id, 0.0) {
+                        if self.open_source(id, 0.0) != Opened::No {
                             break;
                         }
                         next = self.next_id(id, false);
                     }
                     if self.source.is_none() {
+                        if self.waiting.is_some() {
+                            return;
+                        }
                         if self.segments.iter().all(|s| s.written == 0) {
                             self.playing = false;
                             self.stopped = true;
@@ -885,6 +966,18 @@ impl Engine {
                 }
             }
             Command::Notice(message) => self.notice(message),
+            Command::Prepared(page, result) => {
+                if let Some((id, position)) = self.waiting
+                    && self.index(id).is_some_and(|i| self.queue[i].path == page)
+                {
+                    self.waiting = None;
+                    // A lookup takes ~2 s, so the previous track's 0.5 s tail has already played.
+                    match result {
+                        Ok(()) => self.start(id, position, self.playing),
+                        Err(error) => self.stream_failed(id, error),
+                    }
+                }
+            }
             Command::Cover(id, art) => {
                 if self.current == Some(id) {
                     self.cover_url = platform::cache_cover(&self.session_path, art.as_ref());
@@ -945,6 +1038,12 @@ impl Engine {
             compact: self.look.compact,
             pinned: self.look.pinned,
             auto_float: self.look.auto_float,
+            web: self
+                .queue
+                .iter()
+                .filter(|t| youtube::is_stream(&t.path))
+                .cloned()
+                .collect(),
         };
         match platform::save(&self.session_path, &session) {
             Ok(()) => self.config_dirty = false,

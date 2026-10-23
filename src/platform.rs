@@ -139,6 +139,15 @@ pub fn import(paths: Vec<PathBuf>, autoplay: bool, tx: Sender<Command>) {
         let mut tracks = Vec::new();
         let mut skipped = 0;
         for path in paths {
+            if crate::youtube::is_link(&path.to_string_lossy()) {
+                match crate::youtube::list(&path.to_string_lossy()) {
+                    Ok(found) => tracks.extend(found),
+                    Err(error) => {
+                        let _ = tx.send(Command::Notice(format!("YouTube: {error}")));
+                    }
+                }
+                continue;
+            }
             let files = if path.is_dir() {
                 walkdir::WalkDir::new(path)
                     .follow_links(false)
@@ -181,6 +190,59 @@ pub fn import(paths: Vec<PathBuf>, autoplay: bool, tx: Sender<Command>) {
         }
         let _ = tx.send(Command::Loading(false));
     });
+}
+
+/// Ctrl+V and "+ Link": a typed field would fight the bare-key shortcuts, so read the clipboard.
+pub fn paste_link(tx: Sender<Command>) {
+    match clipboard_text().map(|t| t.trim().to_string()) {
+        Some(link) if crate::youtube::is_link(&link) => import(vec![link.into()], false, tx),
+        _ => {
+            let _ = tx.send(Command::Notice(
+                "Copy a YouTube video or playlist link, then paste it here.".into(),
+            ));
+        }
+    }
+}
+
+#[cfg(windows)]
+fn clipboard_text() -> Option<String> {
+    use std::ffi::c_void;
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn OpenClipboard(owner: *mut c_void) -> i32;
+        fn CloseClipboard() -> i32;
+        fn GetClipboardData(format: u32) -> *mut c_void;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GlobalLock(memory: *mut c_void) -> *const u16;
+        fn GlobalUnlock(memory: *mut c_void) -> i32;
+    }
+    const CF_UNICODETEXT: u32 = 13;
+    // SAFETY: the handle is used only between OpenClipboard and CloseClipboard; the text ends with 0.
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return None;
+        }
+        let data = GetClipboardData(CF_UNICODETEXT);
+        let text = if data.is_null() {
+            None
+        } else {
+            let wide = GlobalLock(data);
+            let text = (!wide.is_null()).then(|| {
+                let length = (0..).take_while(|&i| *wide.add(i) != 0).count();
+                String::from_utf16_lossy(std::slice::from_raw_parts(wide, length))
+            });
+            GlobalUnlock(data);
+            text
+        };
+        CloseClipboard();
+        text
+    }
+}
+#[cfg(not(windows))]
+fn clipboard_text() -> Option<String> {
+    None
 }
 
 thread_local! { static DIALOG_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
@@ -455,6 +517,10 @@ fn setup_window(
                     K::Delete | K::Enter | K::ArrowUp | K::ArrowDown
                         if app.get_about_visible() || app.get_compact() =>
                     {
+                        None
+                    }
+                    K::KeyV if modifiers.control_key() && !event.repeat => {
+                        paste_link(commands.clone());
                         None
                     }
                     K::KeyO if modifiers.control_key() => {

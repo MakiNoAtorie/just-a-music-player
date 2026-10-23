@@ -158,7 +158,7 @@ export component PlayerWindow inherits Window {
     in property <bool> loading;
     in property <string> version;
     in-out property <bool> about-visible;
-    callback open-files; callback open-folder; callback transport(string);
+    callback open-files; callback open-folder; callback paste-link; callback transport(string);
     callback seek(float); callback change-volume(float); callback play-track(int);
     callback remove-track(int); callback move-track(int, int); callback clear-queue;
     callback change-look(bool, bool, bool, bool); // dark, compact, pinned, float-on-blur
@@ -224,9 +224,10 @@ export component PlayerWindow inherits Window {
                 Action { text: "Clear"; hint: "Clear queue (Ctrl+Delete)"; enabled: root.queue.length > 0; clicked => { root.clear-queue(); root.selected = -1; } }
                 Action { text: "+ Files"; hint: "Add files (Ctrl+O)"; clicked => { root.open-files(); } }
                 Action { text: "+ Folder"; hint: "Add folder (Ctrl+Shift+O)"; clicked => { root.open-folder(); } }
+                Action { text: "+ Link"; hint: "Add the copied YouTube link (Ctrl+V)"; clicked => { root.paste-link(); } }
             }
             Rectangle { min-height: 110px; vertical-stretch: 1; background: Skin.surface; border-radius: 9px; border-width: 1px; border-color: Skin.line; clip: true;
-                if root.queue.length == 0: Text { text: "Add files or a folder, or drop music here"; color: Skin.faint; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                if root.queue.length == 0: Text { text: "Add files or a folder, drop music here, or paste a YouTube link"; color: Skin.faint; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
                 if root.queue.length > 0: Rectangle {
                     // Keep the keyboard selection and the playing row on screen.
                     property <int> sel: root.selected;
@@ -332,6 +333,7 @@ export component PlayerWindow inherits Window {
                         Row { Text { text: "Ctrl+O"; color: Skin.accent; font-size: 12px; } Text { text: "Add files"; color: Skin.ink; font-size: 12px; } Text { text: "Ctrl+Shift+O"; color: Skin.accent; font-size: 12px; } Text { text: "Add folder"; color: Skin.ink; font-size: 12px; } }
                         Row { Text { text: "↑ / ↓"; color: Skin.accent; font-size: 12px; } Text { text: "Select track"; color: Skin.ink; font-size: 12px; } Text { text: "Enter"; color: Skin.accent; font-size: 12px; } Text { text: "Play"; color: Skin.ink; font-size: 12px; } }
                         Row { Text { text: "Delete"; color: Skin.accent; font-size: 12px; } Text { text: "Remove"; color: Skin.ink; font-size: 12px; } Text { text: "Ctrl+Delete"; color: Skin.accent; font-size: 12px; } Text { text: "Clear queue"; color: Skin.ink; font-size: 12px; } }
+                        Row { Text { text: "Ctrl+V"; color: Skin.accent; font-size: 12px; } Text { text: "Add copied YouTube link"; color: Skin.ink; font-size: 12px; } }
                         Row { Text { text: "Alt+↑ / ↓"; color: Skin.accent; font-size: 12px; } Text { text: "Reorder"; color: Skin.ink; font-size: 12px; } Text { text: "Mini + wheel"; color: Skin.accent; font-size: 12px; } Text { text: "Volume"; color: Skin.ink; font-size: 12px; } }
                     }
                     Rectangle { height: 8px; }

@@ -12,6 +12,8 @@ The executable also accepts files and folders as arguments, queues them, and pla
 .\dist\Maki\maki-player.exe "C:\Music\album"
 ```
 
+**YouTube:** copy a video or playlist link and press **Ctrl+V** (or **+ Link**). Audio streams without a download and seeks to any point. The queue keeps the links between sessions. This needs [yt-dlp](https://github.com/yt-dlp/yt-dlp) and `curl` on PATH (Windows 10 and later include curl). Starting a video takes about 2 s for yt-dlp; while one plays, the next one in the queue is prepared, so they play back to back. After 3 videos in a row fail (for example when offline), playback stops. Live streams are not supported. When YouTube changes, playback fails until you update yt-dlp (`yt-dlp -U`, or `pip install -U yt-dlp`).
+
 Sessions restore paused, with queue, selected playing track, playback position, volume/mute, shuffle/repeat, theme, display mode, and full-view window size. The default Windows session file is `%APPDATA%\Maki\config\session.toml`. Saves happen every five seconds while playing, after settings changes, and on orderly exit. File imports append to the queue; restored duplicate tracks keep their original queue index.
 
 ## Build and checks

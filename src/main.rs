@@ -6,6 +6,7 @@ mod audio;
 mod decoder;
 mod engine;
 mod platform;
+mod youtube;
 use engine::{Command, Look, Repeat, State};
 use slint::{
     ComponentHandle, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel,
@@ -251,6 +252,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     app.on_clear_queue(move || {
         let _ = commands.send(Command::Clear);
     });
+    let commands = tx.clone();
+    app.on_paste_link(move || platform::paste_link(commands.clone()));
     let commands = tx.clone();
     app.on_seek(move |fraction| {
         let _ = commands.send(Command::SeekFraction(fraction));

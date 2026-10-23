@@ -7,7 +7,7 @@ use symphonia::core::{
     codecs::{CODEC_TYPE_NULL, Decoder, DecoderOptions},
     errors::{Error, SeekErrorKind},
     formats::{FormatOptions, FormatReader, SeekMode, SeekTo},
-    io::MediaSourceStream,
+    io::{MediaSource, MediaSourceStream},
     meta::MetadataOptions,
     probe::Hint,
     units::{Time, TimeBase},
@@ -26,13 +26,21 @@ pub struct Source {
     input_frames: u64,
     emitted: u64,
     eof: bool,
+    /// Streams opened mid-file restart timestamps at 0 from this many seconds.
+    offset: f64,
     pub duration: f64,
     pub start: f64,
 }
 
 impl Source {
     pub fn open(path: &Path, output_rate: u32, position: f64) -> Result<Self, String> {
-        let file = File::open(path).map_err(|e| e.to_string())?;
+        let stream = crate::youtube::is_stream(path);
+        let (file, offset): (Box<dyn MediaSource>, f64) = if stream {
+            let (stream, offset) = crate::youtube::Stream::open(path, position)?;
+            (Box::new(stream), offset)
+        } else {
+            (Box::new(File::open(path).map_err(|e| e.to_string())?), 0.0)
+        };
         let mut hint = Hint::new();
         if let Some(extension) = path.extension().and_then(|s| s.to_str()) {
             hint.with_extension(extension);
@@ -40,7 +48,7 @@ impl Source {
         let result = symphonia::default::get_probe()
             .format(
                 &hint,
-                MediaSourceStream::new(Box::new(file), Default::default()),
+                MediaSourceStream::new(file, Default::default()),
                 &FormatOptions {
                     enable_gapless: true,
                     ..Default::default()
@@ -90,7 +98,8 @@ impl Source {
             0.0
         };
         let mut eof = false;
-        if start > 0.0 {
+        // A stream already starts at the fragment that holds `start`; read_packet skips the rest.
+        if start > 0.0 && !stream {
             let seek = format.seek(
                 SeekMode::Accurate,
                 SeekTo::Time {
@@ -144,6 +153,7 @@ impl Source {
             input_frames: 0,
             emitted: 0,
             eof,
+            offset,
             duration,
             start,
         })
@@ -177,7 +187,7 @@ impl Source {
         let mut samples = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
         samples.copy_interleaved_ref(decoded);
         let timestamp = self.time_base.calc_time(packet.ts());
-        let seconds = timestamp.seconds as f64 + timestamp.frac;
+        let seconds = timestamp.seconds as f64 + timestamp.frac + self.offset;
         let skip = ((self.start - seconds).max(0.0) * self.input_rate as f64).round() as usize;
         for frame in samples
             .samples()
